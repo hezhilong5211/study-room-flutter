@@ -3,26 +3,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'remote_store.dart';
 
 import 'domain.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final prefs = await SharedPreferences.getInstance();
-  final store = StudyStore.demo();
-  final saved = prefs.getString('study_room_state');
-  if (saved != null) {
-    try {
-      store.importJson(saved);
-    } catch (_) {
-      await prefs.remove('study_room_state');
-    }
-  }
-  store.addListener(() {
-    unawaited(prefs.setString('study_room_state', store.exportJson()));
-  });
+  final store = RemoteStudyStore(baseUrl: const String.fromEnvironment(
+    'STUDY_API_URL', defaultValue: 'http://localhost:8080'));
   runApp(StudyApp(store: store));
+  unawaited(store.connect());
 }
 
 const ink = Color(0xff2e3a52);
@@ -111,24 +101,25 @@ class _StudyHomeState extends State<StudyHome> {
     super.dispose();
   }
 
-  void act(VoidCallback action) {
+  Future<void> act(FutureOr<dynamic> Function() action) async {
     try {
-      action();
-      setState(() {});
+      await action();
+      if (mounted) setState(() {});
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e is StateError ? e.message : '$e')),
       );
     }
   }
 
-  void exitRoom() {
+  Future<void> exitRoom() async {
     final room = s.rooms.where((r) => r.id == selected).firstOrNull;
     final resident = room?.residents
         .where((p) => p.userId == s.currentUser.id)
         .firstOrNull;
-    if (resident?.isOnline == true && resident?.approved == true) {
-      s.setResidentOnline(roomId: room!.id, online: false);
+    if (resident?.isOnline == true) {
+      await s.setResidentOnline(roomId: room!.id, online: false);
     }
     selected = null;
     focusing = false;
@@ -143,7 +134,19 @@ class _StudyHomeState extends State<StudyHome> {
         : '有效期至 ${badge.expiresAt!.toLocal().toString().split('.').first}';
   }
 
+  String holdingStatus(StudyBadge badge, String userId) {
+    if (s is! RemoteStudyStore) return badgeStatus(badge);
+    final h = (s as RemoteStudyStore).holding(badge.id, userId);
+    if (h == null) return '未持有';
+    if (h['revoked'] == true) return '个人持有已撤销';
+    final end = h['expiresAt'] == null ? null : DateTime.fromMillisecondsSinceEpoch((h['expiresAt'] as num).toInt() * 1000);
+    final personal = end == null ? '个人持有永久有效' : '${end.isAfter(s.now) ? "个人有效期至" : "个人持有已到期"} ${end.toLocal().toString().split(".").first}';
+    return '$personal · 勋章${badgeStatus(badge)}';
+  }
+
   String giftStatus(FrameGift gift) => switch (gift.status) {
+    'pending' => '待支付（支付尚未配置）',
+    'cancelled' => '已取消',
     'paid' => '待接受',
     'active' => gift.isActiveAt(s.now) ? '使用中' : '已过期',
     'expired' => '已过期',
@@ -151,8 +154,9 @@ class _StudyHomeState extends State<StudyHome> {
   };
 
   StudyUser user(String id) => s.users.firstWhere((u) => u.id == id);
-  void notice(String text) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  void notice(String text) {
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
   Future<void> sheet(
     String title,
     List<Widget> Function(BuildContext, StateSetter) content,
@@ -295,10 +299,10 @@ class _StudyHomeState extends State<StudyHome> {
     ),
   );
 
-  void enterRoom(StudyRoom r) => act(() {
-    if (selected != null && selected != r.id) exitRoom();
+  Future<void> enterRoom(StudyRoom r) => act(() async {
+    if (selected != null && selected != r.id) await exitRoom();
     final me = s.residentOf(r, s.currentUser.id);
-    if (me?.approved == true) s.setResidentOnline(roomId: r.id, online: true);
+    if (me?.approved == true) await s.setResidentOnline(roomId: r.id, online: true);
     selected = r.id;
     immersive = false;
     memberWall = false;
@@ -333,6 +337,11 @@ class _StudyHomeState extends State<StudyHome> {
                     child: SafeArea(
                       child: Column(
                         children: [
+                          if (s is RemoteStudyStore && (!(s as RemoteStudyStore).ready || (s as RemoteStudyStore).error != null))
+                            MaterialBanner(
+                              content: Text((s as RemoteStudyStore).error ?? '正在连接自习室服务…'),
+                              actions: [TextButton(onPressed: () => (s as RemoteStudyStore).connect(), child: const Text('重试'))],
+                            ),
                           Padding(
                             padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
                             child: Row(
@@ -359,7 +368,7 @@ class _StudyHomeState extends State<StudyHome> {
                                   ),
                                 const Spacer(),
                                 IconButton(
-                                  tooltip: '切换演示身份',
+                                  tooltip: '账号登录与注册',
                                   onPressed: switchIdentity,
                                   icon: const Icon(
                                     Icons.switch_account_outlined,
@@ -758,7 +767,7 @@ class _StudyHomeState extends State<StudyHome> {
                           onPressed: me?.approved == true
                               ? () {
                                   act(() => focusing = !focusing);
-                                  Navigator.pop(ctx);
+                                  if (ctx.mounted) Navigator.pop(ctx);
                                 }
                               : null,
                         ),
@@ -901,8 +910,8 @@ class _StudyHomeState extends State<StudyHome> {
                         GoldButton(
                           label: me == null ? '申请常驻' : '等待审批',
                           onPressed: me == null
-                              ? () => act(() {
-                                  s.requestJoinRoom(r.id);
+                              ? () => act(() async {
+                                  await s.requestJoinRoom(r.id);
                                   notice('常驻申请已提交，等待房主同意');
                                 })
                               : null,
@@ -1008,7 +1017,7 @@ class _StudyHomeState extends State<StudyHome> {
         GoldButton(
           label: '房间管理 · 背景与音乐',
           onPressed: () {
-            Navigator.pop(ctx);
+            if (ctx.mounted) Navigator.pop(ctx);
             manage(r);
           },
         ),
@@ -1021,9 +1030,9 @@ class _StudyHomeState extends State<StudyHome> {
             (e) => ListTile(title: Text('${user(e.userId).name}  ${e.emoji}')),
           ),
       TextButton(
-        onPressed: () {
-          Navigator.pop(ctx);
-          act(exitRoom);
+        onPressed: () async {
+          if (ctx.mounted) Navigator.pop(ctx);
+          await act(exitRoom);
         },
         child: const Text('离开房间（保留常驻身份）'),
       ),
@@ -1081,14 +1090,14 @@ class _StudyHomeState extends State<StudyHome> {
         ),
         const SizedBox(height: 18),
         FilledButton(
-          onPressed: () => act(() {
-            final r = s.createRoom(
+          onPressed: () => act(() async {
+            final r = await s.createRoom(
               name: name.text,
               isPrivate: private,
               requiredBadgeId: badge,
             );
-            enterRoom(r);
-            Navigator.pop(ctx);
+            await enterRoom(r);
+            if (ctx.mounted) Navigator.pop(ctx);
           }),
           child: const Text('创建房间'),
         ),
@@ -1107,10 +1116,9 @@ class _StudyHomeState extends State<StudyHome> {
         ),
         const SizedBox(height: 16),
         FilledButton(
-          onPressed: () => act(() {
-            s.requestJoinRoom(c.text.trim());
-            enterRoom(s.roomById(c.text.trim()));
-            Navigator.pop(ctx);
+          onPressed: () => act(() async {
+            await s.requestJoinRoom(c.text.trim());
+            if (ctx.mounted) Navigator.pop(ctx);
             notice('申请已提交');
           }),
           child: const Text('申请常驻'),
@@ -1122,16 +1130,18 @@ class _StudyHomeState extends State<StudyHome> {
   void manage(StudyRoom r) {
     sheet(
       '房间管理',
-      (ctx, refresh) => [
+      (ctx, refresh) {
+        r = s.rooms.where((room) => room.id == r.id).firstOrNull ?? r;
+        return [
         const Text('环境设置从系统固定选项中选择'),
         DropdownButtonFormField<String>(
           initialValue: r.backgroundId,
           items: StudyStore.backgrounds.entries
               .map((v) => DropdownMenuItem(value: v.key, child: Text(v.value)))
               .toList(),
-          onChanged: (v) => act(() {
-            s.updateRoomAmbience(roomId: r.id, backgroundId: v);
-            refresh(() {});
+          onChanged: (v) => act(() async {
+            await s.updateRoomAmbience(roomId: r.id, backgroundId: v);
+            if (ctx.mounted) refresh(() {});
           }),
         ),
         DropdownButtonFormField<String>(
@@ -1139,17 +1149,17 @@ class _StudyHomeState extends State<StudyHome> {
           items: StudyStore.musicTracks.entries
               .map((v) => DropdownMenuItem(value: v.key, child: Text(v.value)))
               .toList(),
-          onChanged: (v) => act(() {
-            s.updateRoomAmbience(roomId: r.id, musicId: v);
-            refresh(() {});
+          onChanged: (v) => act(() async {
+            await s.updateRoomAmbience(roomId: r.id, musicId: v);
+            if (ctx.mounted) refresh(() {});
           }),
         ),
         SwitchListTile(
           title: const Text('允许表情弹幕'),
           value: r.emojiEnabled,
-          onChanged: (v) => act(() {
-            s.updateRoomAmbience(roomId: r.id, emojiEnabled: v);
-            refresh(() {});
+          onChanged: (v) => act(() async {
+            await s.updateRoomAmbience(roomId: r.id, emojiEnabled: v);
+            if (ctx.mounted) refresh(() {});
           }),
         ),
         if (r.ownerId == s.currentUser.id) ...[
@@ -1159,13 +1169,19 @@ class _StudyHomeState extends State<StudyHome> {
               .map(
                 (p) => ListTile(
                   title: Text(user(p.userId).name),
-                  trailing: TextButton(
-                    onPressed: () => act(() {
-                      s.approveResident(roomId: r.id, userId: p.userId);
-                      refresh(() {});
-                    }),
-                    child: const Text('同意'),
-                  ),
+                  trailing: Wrap(children: [
+                    if (s is RemoteStudyStore) TextButton(
+                      onPressed: () => act(() => (s as RemoteStudyStore).rejectResident(r.id, p.userId)),
+                      child: const Text('拒绝'),
+                    ),
+                    TextButton(
+                      onPressed: () => act(() async {
+                        await s.approveResident(roomId: r.id, userId: p.userId);
+                        if (ctx.mounted) refresh(() {});
+                      }),
+                      child: const Text('同意'),
+                    ),
+                  ]),
                 ),
               ),
           heading('管理员顺序', '顺序决定房主勋章失效时的转让优先级'),
@@ -1181,20 +1197,20 @@ class _StudyHomeState extends State<StudyHome> {
                     icon: const Icon(Icons.arrow_upward),
                     onPressed: e.key == 0
                         ? null
-                        : () => act(() {
+                        : () => act(() async {
                             final ids = List<String>.from(r.adminIds);
                             final id = ids.removeAt(e.key);
                             ids.insert(e.key - 1, id);
-                            s.reorderAdmins(roomId: r.id, userIds: ids);
-                            refresh(() {});
+                            await s.reorderAdmins(roomId: r.id, userIds: ids);
+                            if (ctx.mounted) refresh(() {});
                           }),
                   ),
                   IconButton(
                     tooltip: '移除管理员',
                     icon: const Icon(Icons.remove_circle_outline),
-                    onPressed: () => act(() {
-                      s.removeAdmin(roomId: r.id, userId: e.value);
-                      refresh(() {});
+                    onPressed: () => act(() async {
+                      await s.removeAdmin(roomId: r.id, userId: e.value);
+                      if (ctx.mounted) refresh(() {});
                     }),
                   ),
                 ],
@@ -1212,16 +1228,16 @@ class _StudyHomeState extends State<StudyHome> {
                 (p) => ListTile(
                   title: Text(user(p.userId).name),
                   trailing: TextButton(
-                    onPressed: () => act(() {
-                      s.addAdmin(roomId: r.id, userId: p.userId);
-                      refresh(() {});
+                    onPressed: () => act(() async {
+                      await s.addAdmin(roomId: r.id, userId: p.userId);
+                      if (ctx.mounted) refresh(() {});
                     }),
                     child: const Text('设为管理员'),
                   ),
                 ),
               ),
         ],
-      ],
+      ]; },
     );
   }
 
@@ -1252,12 +1268,12 @@ class _StudyHomeState extends State<StudyHome> {
             const SizedBox(width: 8),
             GoldButton(
               label: '进入',
-              onPressed: () => act(() {
+              onPressed: () => act(() async {
                 final r = s.rooms
                     .where((r) => r.id == roomSearch.text.trim())
                     .firstOrNull;
                 if (r == null) throw StateError('房间不存在');
-                enterRoom(r);
+                await enterRoom(r);
               }),
             ),
           ],
@@ -1340,16 +1356,16 @@ class _StudyHomeState extends State<StudyHome> {
         if (u.id != s.currentUser.id) ...[
           if (!s.currentUser.friendIds.contains(u.id))
             OutlinedButton(
-              onPressed: () => act(() {
-                s.sendFriendRequest(u.id);
-                Navigator.pop(ctx);
+              onPressed: () => act(() async {
+                await s.sendFriendRequest(u.id);
+                if (ctx.mounted) Navigator.pop(ctx);
                 notice('好友申请已发送');
               }),
               child: const Text('发送好友申请'),
             ),
           FilledButton.icon(
             onPressed: () {
-              Navigator.pop(ctx);
+              if (ctx.mounted) Navigator.pop(ctx);
               gift(u);
             },
             icon: const Icon(Icons.card_giftcard),
@@ -1395,10 +1411,10 @@ class _StudyHomeState extends State<StudyHome> {
                   const SizedBox(height: 3),
                   Text(
                     s.currentUser.isGuest
-                        ? '虚拟访客 · 注册后创建房间'
+                        ? '访客 · 注册后创建房间'
                         : s.currentUser.isMember
-                        ? '会员 · 演示身份'
-                        : '普通用户 · 演示身份',
+                        ? '会员'
+                        : '普通用户',
                     style: const TextStyle(color: gold, fontSize: 11),
                   ),
                 ],
@@ -1423,18 +1439,18 @@ class _StudyHomeState extends State<StudyHome> {
       ),
       profileRow(
         Icons.switch_account_outlined,
-        '切换演示身份',
-        '验证双方审批',
+        '账号登录与注册',
+        '当前账号与安全退出',
         switchIdentity,
       ),
       profileRow(
         Icons.info_outline,
         '设置与说明',
-        '本地交互原型',
+        '服务连接与支付说明',
         () => sheet(
           '设置与说明',
           (ctx, _) => [
-            const Text('账号、会员、支付与多人在线尚未连接服务器。数据保存在本设备，可切换身份演示审批和赠礼。场景音效待接入。'),
+            const Text('账号、房间和在线状态由服务端管理。支付提供商尚未配置，订单保持待支付。场景音效待接入。'),
           ],
         ),
       ),
@@ -1489,7 +1505,7 @@ class _StudyHomeState extends State<StudyHome> {
       (b) => ListTile(
         leading: const Icon(Icons.verified_outlined, color: Color(0xffa8742a)),
         title: Text(b.name),
-        subtitle: Text(badgeStatus(b)),
+        subtitle: Text(holdingStatus(b, s.currentUser.id)),
       ),
     ),
     heading('我发行的勋章', '兑换码可复制给其他用户'),
@@ -1506,14 +1522,17 @@ class _StudyHomeState extends State<StudyHome> {
               Text(
                 '已领取：${b.recipientIds.map((id) => user(id).name).join('、')}',
               ),
-              ...b.recipientIds.map(
+              ...(s is RemoteStudyStore ? (s as RemoteStudyStore).holdings.where((h) => h['badgeId'] == b.id).map((h) => h['userId'] as String) : b.recipientIds).map(
                 (id) => ListTile(
                   contentPadding: EdgeInsets.zero,
                   title: Text(user(id).name),
-                  trailing: TextButton(
-                    onPressed: () => confirmRemoveHolder(b, id),
-                    child: const Text('解除此人勋章'),
-                  ),
+                  subtitle: Text(holdingStatus(b, id)),
+                  trailing: Wrap(children: [
+                    if (s is RemoteStudyStore) TextButton(
+                      onPressed: () => act(() => (s as RemoteStudyStore).renewHolding(b.id, id)),
+                      child: const Text('续期30天')),
+                    TextButton(onPressed: () => confirmRemoveHolder(b, id), child: const Text('解除')),
+                  ]),
                 ),
               ),
               Wrap(
@@ -1526,14 +1545,14 @@ class _StudyHomeState extends State<StudyHome> {
                     child: const Text('复制'),
                   ),
                   TextButton(
-                    onPressed: () => act(() {
-                      s.renewBadge(
+                    onPressed: () => act(() async {
+                      await s.renewBadge(
                         badgeId: b.id,
                         validity: const Duration(days: 30),
                       );
-                      notice('有效期已延长 30 天（模拟续费）');
+                      notice('有效期已延长 30 天');
                     }),
-                    child: const Text('续费 30 天'),
+                    child: const Text('续期 30 天'),
                   ),
                   TextButton(
                     onPressed: () => confirmRevoke(b),
@@ -1570,6 +1589,11 @@ class _StudyHomeState extends State<StudyHome> {
             ),
           ),
         ),
+    heading('我送出的订单'),
+    ...s.gifts.where((g) => g.senderId == s.currentUser.id).map((g) => ListTile(
+      title: Text('${StudyStore.frameCatalog[g.frameId]} → ${user(g.recipientId).name}'),
+      subtitle: Text('${g.duration.inDays} 天 · ${giftStatus(g)}'),
+    )),
     heading('头像框礼物', '先接受，再佩戴；有效期从接受时开始'),
     ...s.gifts
         .where((g) => g.recipientId == s.currentUser.id)
@@ -1582,11 +1606,11 @@ class _StudyHomeState extends State<StudyHome> {
             subtitle: Text('来自 ${user(g.senderId).name} · ${giftStatus(g)}'),
             trailing: TextButton(
               onPressed: g.status == 'paid' || g.isActiveAt(s.now)
-                  ? () => act(() {
+                  ? () => act(() async {
                       if (g.status == 'paid') {
-                        s.acceptGift(g.id);
+                        await s.acceptGift(g.id);
                       } else {
-                        s.switchFrame(g.id);
+                        await s.switchFrame(g.id);
                       }
                     })
                   : null,
@@ -1595,24 +1619,25 @@ class _StudyHomeState extends State<StudyHome> {
                     ? '接受'
                     : g.isActiveAt(s.now)
                     ? '佩戴'
-                    : '已过期',
+                    : giftStatus(g),
               ),
             ),
           ),
         ),
     TextButton(
-      onPressed: () => act(() => s.switchFrame(null)),
+      onPressed: () => act(() async => await s.switchFrame(null)),
       child: const Text('不佩戴头像框'),
     ),
     const Padding(
       padding: EdgeInsets.symmetric(vertical: 20),
       child: Text(
-        '当前为本地交互原型：账号、会员、支付与多人在线尚未连接服务器。数据保存在本设备，可切换身份演示审批和赠礼。',
+        '账号权限以服务器为准。支付暂未开通，待支付订单不会变为可领取礼物。',
         style: TextStyle(fontSize: 12, color: Colors.grey),
       ),
     ),
   ];
   void editProfile() {
+    if (s is RemoteStudyStore && s.currentUser.isGuest) { switchIdentity(); return; }
     final c = TextEditingController(
       text: s.currentUser.isGuest ? '' : s.currentUser.name,
     );
@@ -1639,10 +1664,10 @@ class _StudyHomeState extends State<StudyHome> {
         ),
         const SizedBox(height: 20),
         FilledButton(
-          onPressed: () => act(() {
-            if (s.currentUser.isGuest) s.registerGuest(name: c.text);
-            s.updateProfile(name: c.text, avatar: face);
-            Navigator.pop(ctx);
+          onPressed: () => act(() async {
+            if (s.currentUser.isGuest) await s.registerGuest(name: c.text);
+            await s.updateProfile(name: c.text, avatar: face);
+            if (ctx.mounted) Navigator.pop(ctx);
           }),
           child: const Text('保存资料'),
         ),
@@ -1667,12 +1692,12 @@ class _StudyHomeState extends State<StudyHome> {
           onChanged: (v) => refresh(() => lifetime = v),
         ),
         FilledButton(
-          onPressed: () => act(() {
-            s.createBadge(
+          onPressed: () => act(() async {
+            await s.createBadge(
               name: c.text,
               validity: lifetime ? null : const Duration(days: 30),
             );
-            Navigator.pop(ctx);
+            if (ctx.mounted) Navigator.pop(ctx);
           }),
           child: const Text('生成勋章和兑换码'),
         ),
@@ -1691,9 +1716,9 @@ class _StudyHomeState extends State<StudyHome> {
         ),
         const SizedBox(height: 20),
         FilledButton(
-          onPressed: () => act(() {
-            s.redeemBadge(c.text.trim());
-            Navigator.pop(ctx);
+          onPressed: () => act(() async {
+            await s.redeemBadge(c.text.trim());
+            if (ctx.mounted) Navigator.pop(ctx);
             notice('勋章已领取');
           }),
           child: const Text('确认兑换'),
@@ -1748,7 +1773,7 @@ class _StudyHomeState extends State<StudyHome> {
 
   void gift(StudyUser u) {
     String frame = StudyStore.frameCatalog.keys.first;
-    int days = 30;
+    int days = 7;
     sheet(
       '送给 ${u.name}',
       (ctx, refresh) => [
@@ -1761,7 +1786,7 @@ class _StudyHomeState extends State<StudyHome> {
               .toList(),
           onChanged: (v) => frame = v!,
         ),
-        Wrap(
+        if (s is! RemoteStudyStore) Wrap(
           spacing: 8,
           children: [7, 30, 90]
               .map(
@@ -1775,27 +1800,55 @@ class _StudyHomeState extends State<StudyHome> {
         ),
         const Padding(
           padding: EdgeInsets.symmetric(vertical: 16),
-          child: Text('演示订单不扣款。收礼人接受后开始计时，可在多个头像框之间切换。'),
+          child: Text('创建待支付订单，价格与有效期以服务端商品配置为准。支付尚未配置，暂不能完成赠送。'),
         ),
         FilledButton(
-          onPressed: () => act(() {
-            s.purchaseGift(
+          onPressed: () => act(() async {
+            await s.purchaseGift(
               recipientId: u.id,
               frameId: frame,
               duration: Duration(days: days),
             );
-            Navigator.pop(ctx);
-            notice('模拟支付成功，等待对方接受');
+            if (ctx.mounted) Navigator.pop(ctx);
+            notice('订单已创建，保持待支付；支付提供商尚未配置');
           }),
-          child: const Text('模拟支付并赠送'),
+          child: const Text('创建待支付订单'),
         ),
       ],
     );
   }
 
   void switchIdentity() {
+    if (s is RemoteStudyStore) {
+      final remote = s as RemoteStudyStore;
+      final login = TextEditingController();
+      final password = TextEditingController();
+      final name = TextEditingController(text: s.currentUser.isGuest ? '' : s.currentUser.name);
+      bool register = s.currentUser.isGuest;
+      sheet('账号登录与注册', (ctx, refresh) => [
+        Text('当前：${s.currentUser.name} · ${s.currentUser.isGuest ? "访客" : "已登录"}'),
+        if (s.currentUser.isGuest) SwitchListTile(title: const Text('注册并升级当前访客'), value: register, onChanged: (v) => refresh(() => register = v)),
+        TextField(controller: login, decoration: const InputDecoration(labelText: '账号'), autocorrect: false),
+        const SizedBox(height: 12),
+        TextField(controller: password, obscureText: true, decoration: const InputDecoration(labelText: '密码（10–256 位）')),
+        if (register) TextField(controller: name, decoration: const InputDecoration(labelText: '昵称')),
+        const SizedBox(height: 16),
+        FilledButton(onPressed: () => act(() async {
+          await remote.authenticate(register: register, login: login.text.trim(), password: password.text, name: name.text.trim());
+          selected = null;
+          focusing = false;
+          if (ctx.mounted) Navigator.pop(ctx);
+          notice(register ? '注册成功，请完善个人资料' : '登录成功');
+        }), child: Text(register ? '注册并升级' : '登录')),
+        if (!s.currentUser.isGuest) TextButton(onPressed: () => act(() async {
+          await remote.logout(); selected = null; focusing = false;
+          if (ctx.mounted) Navigator.pop(ctx);
+        }), child: const Text('退出登录')),
+      ]).whenComplete(() { login.dispose(); password.dispose(); name.dispose(); });
+      return;
+    }
     sheet(
-      '切换演示身份',
+      '账号登录与注册',
       (ctx, _) => [
         const Text('用于验证双方审批、勋章领取和收礼流程，不代表真实登录。'),
         ...s.users.map(
@@ -1809,10 +1862,10 @@ class _StudyHomeState extends State<StudyHome> {
                   ? '会员'
                   : '非会员',
             ),
-            onTap: () => act(() {
-              exitRoom();
-              s.switchUser(u.id);
-              Navigator.pop(ctx);
+            onTap: () => act(() async {
+              await exitRoom();
+              await s.switchUser(u.id);
+              if (ctx.mounted) Navigator.pop(ctx);
             }),
           ),
         ),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -276,9 +277,9 @@ class StudyStore extends ChangeNotifier {
     final badge = s.createBadge(
       name: '晨光自习社',
       validity: const Duration(days: 30),
-    );
+    ) as StudyBadge;
     badge.recipientIds.addAll(['chen', 'zhou']);
-    final room = s.createRoom(name: '晨光图书馆', requiredBadgeId: badge.id);
+    final room = s.createRoom(name: '晨光图书馆', requiredBadgeId: badge.id) as StudyRoom;
     room.adminIds.addAll(['chen', 'zhou']);
     room.residents.addAll([
       RoomResident(
@@ -401,14 +402,14 @@ class StudyStore extends ChangeNotifier {
     return null;
   }
 
-  void switchUser(String userId) {
+  FutureOr<void> switchUser(String userId) {
     userById(userId);
     _currentUserId = userId;
     sweep();
     notifyListeners();
   }
 
-  StudyUser registerGuest({required String name}) {
+  FutureOr<StudyUser> registerGuest({required String name}) {
     _require(currentUser.isGuest, '当前用户已注册');
     currentUser.name = _name(name);
     currentUser.isGuest = false;
@@ -416,7 +417,7 @@ class StudyStore extends ChangeNotifier {
     return currentUser;
   }
 
-  void updateProfile({required String name, String avatar = '🙂'}) {
+  FutureOr<void> updateProfile({required String name, String avatar = '🙂'}) {
     _registered();
     currentUser.name = _name(name);
     currentUser.avatar = _name(avatar);
@@ -424,7 +425,7 @@ class StudyStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  StudyBadge createBadge({required String name, Duration? validity}) {
+  FutureOr<StudyBadge> createBadge({required String name, Duration? validity}) {
     _complete();
     _duration(validity);
     final id = _id('badge');
@@ -443,7 +444,7 @@ class StudyStore extends ChangeNotifier {
 
   void _duration(Duration? d) =>
       _require(d == null || d > Duration.zero, '有效期必须大于零');
-  StudyBadge redeemBadge(String code) {
+  FutureOr<StudyBadge> redeemBadge(String code) {
     _registered();
     final b = _badges.firstWhere(
       (b) => b.code == code.trim().toUpperCase(),
@@ -455,7 +456,7 @@ class StudyStore extends ChangeNotifier {
     return b;
   }
 
-  void revokeBadge(String badgeId) {
+  FutureOr<void> revokeBadge(String badgeId) {
     final b = badgeById(badgeId);
     _require(b.issuerId == currentUser.id, '仅发行者可撤销');
     b.revoked = true;
@@ -466,7 +467,7 @@ class StudyStore extends ChangeNotifier {
   /// Revoke one recipient while keeping the badge and other holders valid.
   /// Room succession and presence are updated immediately, including when the
   /// issuer removes their own badge ownership.
-  void revokeBadgeRecipient(String badgeId, String userId) {
+  FutureOr<void> revokeBadgeRecipient(String badgeId, String userId) {
     final b = badgeById(badgeId);
     _require(b.issuerId == currentUser.id, '仅发行者可收回徽章');
     userById(userId);
@@ -476,9 +477,9 @@ class StudyStore extends ChangeNotifier {
   }
 
   /// Named-argument alias retained for existing callers.
-  void revokeBadgeFromUser({required String badgeId, required String userId}) =>
+  FutureOr<void> revokeBadgeFromUser({required String badgeId, required String userId}) =>
       revokeBadgeRecipient(badgeId, userId);
-  void renewBadge({required String badgeId, Duration? validity}) {
+  FutureOr<void> renewBadge({required String badgeId, Duration? validity}) {
     final b = badgeById(badgeId);
     _require(b.issuerId == currentUser.id, '仅发行者可续期');
     _require(!b.revoked, '已撤销徽章不可续期');
@@ -490,7 +491,7 @@ class StudyStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  StudyRoom createRoom({
+  FutureOr<StudyRoom> createRoom({
     required String name,
     bool isPrivate = false,
     String? requiredBadgeId,
@@ -520,7 +521,7 @@ class StudyStore extends ChangeNotifier {
     return r;
   }
 
-  void requestJoinRoom(String roomId) {
+  FutureOr<void> requestJoinRoom(String roomId) {
     sweep();
     final room = roomById(roomId);
     _require(
@@ -538,7 +539,7 @@ class StudyStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void approveResident({required String roomId, required String userId}) {
+  FutureOr<void> approveResident({required String roomId, required String userId}) {
     sweep();
     final room = roomById(roomId);
     _require(room.ownerId == currentUser.id, '仅房主可批准入驻');
@@ -553,9 +554,9 @@ class StudyStore extends ChangeNotifier {
   }
 
   /// Leaving preserves approved residency; it only changes presence.
-  void leaveRoom(String roomId) =>
+  FutureOr<void> leaveRoom(String roomId) =>
       setResidentOnline(roomId: roomId, online: false);
-  void setResidentOnline({required String roomId, required bool online}) {
+  FutureOr<void> setResidentOnline({required String roomId, required bool online}) {
     if (online) sweep();
     final room = roomById(roomId);
     final r = residentOf(room, currentUser.id);
@@ -571,7 +572,7 @@ class StudyStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void addAdmin({required String roomId, required String userId}) {
+  FutureOr<void> addAdmin({required String roomId, required String userId}) {
     sweep();
     final r = roomById(roomId);
     _require(r.ownerId == currentUser.id, '仅房主可设置管理员');
@@ -585,14 +586,14 @@ class StudyStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void removeAdmin({required String roomId, required String userId}) {
+  FutureOr<void> removeAdmin({required String roomId, required String userId}) {
     final r = roomById(roomId);
     _require(r.ownerId == currentUser.id, '仅房主可设置管理员');
     r.adminIds.remove(userId);
     notifyListeners();
   }
 
-  void reorderAdmins({required String roomId, required List<String> userIds}) {
+  FutureOr<void> reorderAdmins({required String roomId, required List<String> userIds}) {
     final r = roomById(roomId);
     _require(r.ownerId == currentUser.id, '仅房主可排序');
     _require(
@@ -607,7 +608,7 @@ class StudyStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  void updateRoomAmbience({
+  FutureOr<void> updateRoomAmbience({
     required String roomId,
     String? backgroundId,
     String? musicId,
@@ -627,7 +628,7 @@ class StudyStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  EmojiEvent sendEmoji({required String roomId, required String emoji}) {
+  FutureOr<EmojiEvent> sendEmoji({required String roomId, required String emoji}) {
     sweep();
     final r = roomById(roomId);
     final resident = residentOf(r, currentUser.id);
@@ -651,7 +652,7 @@ class StudyStore extends ChangeNotifier {
     return e;
   }
 
-  FriendRequest sendFriendRequest(String userId) {
+  FutureOr<FriendRequest> sendFriendRequest(String userId) {
     _registered();
     final target = userById(userId);
     _require(!target.isGuest && userId != currentUser.id, '请选择其他注册用户');
@@ -675,9 +676,8 @@ class StudyStore extends ChangeNotifier {
     return r;
   }
 
-  void acceptFriendRequest(String requestId) => _answerFriend(requestId, true);
-  void declineFriendRequest(String requestId) =>
-      _answerFriend(requestId, false);
+  FutureOr<void> acceptFriendRequest(String requestId) { _answerFriend(requestId, true); }
+  FutureOr<void> declineFriendRequest(String requestId) { _answerFriend(requestId, false); }
   void _answerFriend(String id, bool accept) {
     final r = _friendRequests.firstWhere(
       (r) => r.id == id,
@@ -693,7 +693,7 @@ class StudyStore extends ChangeNotifier {
   }
 
   /// Local mock checkout succeeds immediately. Paid gifts start only on acceptance.
-  FrameGift purchaseGift({
+  FutureOr<FrameGift> purchaseGift({
     required String recipientId,
     required String frameId,
     required Duration duration,
@@ -715,7 +715,7 @@ class StudyStore extends ChangeNotifier {
     return g;
   }
 
-  void acceptGift(String giftId) {
+  FutureOr<void> acceptGift(String giftId) {
     final g = giftById(giftId);
     _require(g.recipientId == currentUser.id && g.status == 'paid', '礼物不可领取');
     g.status = 'active';
@@ -726,7 +726,7 @@ class StudyStore extends ChangeNotifier {
   }
 
   /// Pass an accepted gift ID, or null to remove the equipped frame.
-  void switchFrame(String? giftId) {
+  FutureOr<void> switchFrame(String? giftId) {
     sweep();
     if (giftId == null) {
       currentUser.activeFrameId = null;
@@ -867,7 +867,7 @@ class StudyStore extends ChangeNotifier {
     unique(_users.map((u) => u.id));
     unique(_rooms.map((r) => r.id));
     unique(_badges.map((b) => b.id));
-    unique(_badges.map((b) => b.code));
+    unique(_badges.map((b) => b.code).where((code) => code.isNotEmpty));
     unique(_gifts.map((g) => g.id));
     unique(_friendRequests.map((r) => r.id));
     unique(_emojiEvents.map((e) => e.id));
@@ -906,11 +906,11 @@ class StudyStore extends ChangeNotifier {
       _duration(g.duration);
       _require(
         frameCatalog.containsKey(g.frameId) &&
-            ['paid', 'active', 'expired'].contains(g.status),
+            ['pending', 'cancelled', 'paid', 'active', 'expired'].contains(g.status),
         '无效礼物',
       );
       _require(
-        g.status == 'paid' || (g.activatedAt != null && g.expiresAt != null),
+        !['active', 'expired'].contains(g.status) || (g.activatedAt != null && g.expiresAt != null),
         '无效礼物日期',
       );
     }
