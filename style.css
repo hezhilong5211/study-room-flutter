@@ -1,0 +1,75 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #101421;
+  color: #faf3e8;
+  --muted: #c2bdcd;
+  --line: #383648;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+a { color: inherit; }
+a:focus-visible { outline: 2px solid #ffe5b6; outline-offset: 5px; }
+.shell { width: min(100% - 48px, 1056px); margin-inline: auto; }
+.brand { min-height: 82px; display: flex; align-items: center; gap: 12px; font-weight: 650; }
+.brand img { border-radius: 50%; }
+.brand-note { margin-left: auto; color: var(--muted); font-size: .84rem; font-weight: 450; }
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.18fr 1fr;
+  background: linear-gradient(130deg, #1b1b33, #141625 62%);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  overflow: hidden;
+}
+.intro { padding: clamp(36px, 6vw, 76px); align-self: center; }
+.eyebrow { display: flex; align-items: center; gap: 9px; margin: 0 0 13px; color: #f7cc94; font-size: .75rem; letter-spacing: .16em; font-weight: 660; }
+.eyebrow span { width: 7px; height: 7px; border-radius: 50%; background: #f7cc94; }
+h1 { margin: 0; font-family: "Songti SC", "Noto Serif CJK SC", SimSun, serif; font-size: clamp(3.15rem, 7vw, 5.5rem); font-weight: 700; letter-spacing: .045em; line-height: 1.15; }
+.tagline { margin: 15px 0 32px; color: var(--muted); line-height: 1.7; }
+.download {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 13px 24px;
+  background: linear-gradient(110deg, #fff0d8, #ffc676);
+  border-radius: 14px;
+  color: #302013;
+  font-weight: 760;
+  text-decoration: none;
+  box-shadow: 0 8px 24px #09091460;
+}
+.download:hover { background: #ffe2ac; }
+.release-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 16px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: .79rem; }
+.release-meta li + li { padding-left: 12px; border-left: 1px solid #5a536a; }
+
+.scene { min-height: 365px; margin: 0; position: relative; isolation: isolate; }
+.scene img { position: absolute; width: 100%; height: 100%; object-fit: cover; object-position: center 16%; }
+.scene::after { position: absolute; inset: 0; content: ""; background: linear-gradient(0deg, #101421b3, transparent 42%); }
+.scene figcaption { position: absolute; z-index: 1; right: 20px; bottom: 18px; color: #eee0ce; font-size: .83rem; letter-spacing: .1em; }
+
+.install { margin: 44px 0 32px; }
+.install h2 { margin: 0 0 15px; font-size: 1.25rem; }
+.install ol { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 0; padding: 0; list-style: none; counter-reset: install; }
+.install li { counter-increment: install; display: grid; grid-template-columns: 32px 1fr; gap: 5px 12px; border-top: 1px solid var(--line); padding-top: 15px; }
+.install li::before { content: counter(install, decimal-leading-zero); grid-row: span 2; color: #f7cc94; font-size: .82rem; font-variant-numeric: tabular-nums; line-height: 1.7; }
+.install li span { color: var(--muted); line-height: 1.65; font-size: .875rem; }
+footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 20px 0 26px; border-top: 1px solid var(--line); color: var(--muted); font-size: .82rem; }
+footer a { text-underline-offset: 3px; }
+
+@media (max-width: 700px) {
+  .shell { width: min(100% - 32px, 520px); }
+  .brand { min-height: 66px; }
+  .hero { grid-template-columns: 1fr; border-radius: 22px; }
+  .intro { padding: 27px 22px 25px; }
+  .tagline { margin: 11px 0 23px; }
+  .download { width: 100%; }
+  .scene { min-height: clamp(132px, 31vw, 186px); }
+  .scene img { object-position: center 14%; }
+  .install { margin: 29px 0 24px; }
+  .install ol { grid-template-columns: 1fr; gap: 13px; }
+}
